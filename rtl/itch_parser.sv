@@ -2,8 +2,16 @@
 // itch 5.0 parser. byte stream in, decoded book ops out.
 //
 // framing is the sample-file style: 2 byte big endian length, then the
-// message. body bytes land in a buffer and decode fires the cycle after
-// the last byte, so op_valid trails the wire by exactly one cycle.
+// message. body bytes land in a buffer, decode fires the cycle after the
+// last byte and registers its outputs, so op_valid shows up two cycles
+// after the final byte on the wire.
+//
+// field contract: each op only drives the fields that itch message
+// carries, everything else holds stale bytes. consumers key off op_code
+// and read nothing extra. lengths get checked against the spec table for
+// known types, any corrupt frame trips framing_err and the parser goes
+// dead until reset rather than guessing at resync and feeding the book
+// phantom orders.
 
 `default_nettype none
 
@@ -44,11 +52,40 @@ module itch_parser (
     localparam S_LEN_LO = 2'd1;
     localparam S_BODY   = 2'd2;
 
+    localparam S_DEAD   = 2'd3;
+
     reg [1:0]  state;
     reg [15:0] msg_len;
     reg [15:0] cnt;
     reg [7:0]  buf_ [0:MAX_LEN-1];
     reg        dec_pend;
+
+    integer bi;
+    initial for (bi = 0; bi < MAX_LEN; bi = bi + 1) buf_[bi] = 8'd0;
+
+    wire [7:0] mtype = buf_[0];
+
+    // spec lengths for every itch 5.0 type, 0 means unknown to us
+    function [7:0] explen_f(input [7:0] t);
+        case (t)
+            "S": explen_f = 8'd12;  "R": explen_f = 8'd39;
+            "H": explen_f = 8'd25;  "Y": explen_f = 8'd20;
+            "L": explen_f = 8'd26;  "V": explen_f = 8'd35;
+            "W": explen_f = 8'd12;  "K": explen_f = 8'd28;
+            "J": explen_f = 8'd35;  "h": explen_f = 8'd21;
+            "A": explen_f = 8'd36;  "F": explen_f = 8'd40;
+            "E": explen_f = 8'd31;  "C": explen_f = 8'd36;
+            "X": explen_f = 8'd23;  "D": explen_f = 8'd19;
+            "U": explen_f = 8'd35;  "P": explen_f = 8'd44;
+            "Q": explen_f = 8'd40;  "B": explen_f = 8'd19;
+            "I": explen_f = 8'd50;  "N": explen_f = 8'd20;
+            "O": explen_f = 8'd48;
+            default: explen_f = 8'd0;
+        endcase
+    endfunction
+
+    wire [7:0] explen = explen_f(mtype);
+    wire dec_len_bad = (explen != 8'd0) && (msg_len != {8'd0, explen});
 
     wire last_byte = (state == S_BODY) && in_valid && (cnt == msg_len - 1);
 
@@ -68,9 +105,10 @@ module itch_parser (
                     msg_len[7:0] <= in_data;
                     cnt <= 16'd0;
                     if ({msg_len[15:8], in_data} == 16'd0 ||
-                        {msg_len[15:8], in_data} > MAX_LEN)
-                        framing_err <= 1'b1;   // stream is unrecoverable past this
-                    else
+                        {msg_len[15:8], in_data} > MAX_LEN) begin
+                        framing_err <= 1'b1;   // no honest resync from here
+                        state <= S_DEAD;
+                    end else
                         state <= S_BODY;
                 end
                 S_BODY: if (in_valid) begin
@@ -79,16 +117,21 @@ module itch_parser (
                     if (cnt == msg_len - 1)
                         state <= S_LEN_HI;
                 end
+                S_DEAD: state <= S_DEAD;       // parked until reset
                 default: state <= S_LEN_HI;
             endcase
+            // last assignment wins, a spec length mismatch overrides
+            // whatever the framing fsm wanted to do next
+            if (dec_pend && dec_len_bad) begin
+                framing_err <= 1'b1;
+                state <= S_DEAD;
+            end
         end
     end
 
     // by the time dec_pend is up the whole body including the final byte has
     // been written, back to back messages cannot clobber buf_[0] until three
     // cycles later so reading here is safe
-    wire [7:0] mtype = buf_[0];
-
     function [63:0] f64(input [15:0] o);
         f64 = {buf_[o], buf_[o+1], buf_[o+2], buf_[o+3],
                buf_[o+4], buf_[o+5], buf_[o+6], buf_[o+7]};
@@ -107,7 +150,7 @@ module itch_parser (
         end else begin
             op_valid  <= 1'b0;
             msg_valid <= 1'b0;
-            if (dec_pend) begin
+            if (dec_pend && !dec_len_bad && !framing_err) begin
                 msg_valid <= 1'b1;
                 msg_type  <= mtype;
                 op_locate <= f16(1);

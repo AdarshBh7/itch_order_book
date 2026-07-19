@@ -1,9 +1,10 @@
 `timescale 1ns/1ps
 // parser feeding the book through a small elastic fifo. the wire side has
 // no backpressure, bytes show up when they show up, so ops queue here while
-// the book grinds through its fixed cycle update. shortest itch message is
-// 21 bytes on the wire and the book worst case is 10 cycles, so the fifo
-// never builds depth. fifo_hwm proves that claim after a run.
+// the book grinds through its fixed cycle update. the shortest op producing
+// message is a delete at 21 wire bytes (shorter system messages exist but
+// make no ops) and the book worst case is 10 cycles, so depth stays bounded
+// around 2. fifo_hwm proves that claim after a run.
 
 `default_nettype none
 

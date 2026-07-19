@@ -95,3 +95,83 @@ def m_replace(locate, old_ref, new_ref, shares, price):
 
 def n_msgs_env(default):
     return int(os.environ.get('ITCH_N_MSGS', default))
+
+
+def build_torture(locate=7, noise=9, base=3000000, n_ops=None, seed=20260719):
+    if n_ops is None:
+        n_ops = int(os.environ.get('ITCH_TORTURE_OPS', 6000))
+    """Deterministic hostile stimulus. One builder shared by the bench and
+    any debug script so a repro is always the real thing."""
+    import random
+    rng = random.Random(seed)
+    live = []
+    next_ref = 1000
+    msgs = []
+
+    def fresh_ref():
+        nonlocal next_ref
+        next_ref += rng.choice([2, 4, 6])
+        return next_ref
+
+    # pin the corners of the tick space on both sides so the priority
+    # encoders get exercised at group 0 bit 0 and group 63 bit 63
+    for tick, side in ((0, True), (0, False), (4095, True), (4095, False)):
+        msgs.append(m_add(locate, fresh_ref(), side, 100, base + tick * TICK))
+
+    # refs 2^33 apart hash to the same set, six of them overflows the
+    # four ways and the drop path has to match the model exactly
+    for k in range(6):
+        msgs.append(m_add(locate, 500001 + (k << 33), True, 10 + k,
+                          base + (500 + k) * TICK))
+
+    # duplicate ref adds, plain and via a replace's new_ref
+    msgs.append(m_add(locate, 500001, False, 77, base + 600 * TICK))
+    dup_target = fresh_ref()
+    msgs.append(m_add(locate, dup_target, True, 55, base + 700 * TICK))
+    victim = fresh_ref()
+    msgs.append(m_add(locate, victim, True, 66, base + 701 * TICK))
+    msgs.append(m_replace(locate, victim, dup_target, 44, base + 702 * TICK))
+
+    for _ in range(n_ops):
+        r = rng.random()
+        loc = noise if rng.random() < 0.15 else locate
+        if r < 0.40 or not live:
+            price = base + rng.randrange(0, TICKS) * TICK
+            if rng.random() < 0.05:
+                price = base + rng.randrange(0, TICKS * TICK)  # maybe off tick
+            if rng.random() < 0.05:
+                price = base + TICKS * TICK + rng.randrange(0, 500000)
+            if rng.random() < 0.02 and base > 0:
+                price = rng.randrange(0, base)                 # below window
+            ref = fresh_ref()
+            msgs.append(m_add(loc, ref, rng.random() < 0.5,
+                              rng.randrange(1, 5000),
+                              price, mpid=rng.random() < 0.1))
+            if loc == locate:
+                live.append(ref)
+        elif r < 0.60:
+            ref = rng.choice(live) if rng.random() < 0.9 else fresh_ref()
+            shares = rng.randrange(1, 8000)   # sometimes more than resting
+            px = base + rng.randrange(0, TICKS) * TICK
+            msgs.append(m_exec(loc, ref, shares,
+                               with_price=px if rng.random() < 0.3 else None))
+        elif r < 0.75:
+            ref = rng.choice(live) if rng.random() < 0.9 else fresh_ref()
+            msgs.append(m_cancel(loc, ref, rng.randrange(1, 6000)))
+        elif r < 0.88:
+            ref = rng.choice(live) if rng.random() < 0.9 else fresh_ref()
+            msgs.append(m_delete(loc, ref))
+            if ref in live and loc == locate:
+                live.remove(ref)
+        else:
+            old = rng.choice(live) if rng.random() < 0.9 else fresh_ref()
+            new = fresh_ref()
+            price = base + rng.randrange(0, TICKS) * TICK
+            if rng.random() < 0.10:
+                price = base + TICKS * TICK + 12345   # replace out of window
+            msgs.append(m_replace(locate, old, new, rng.randrange(1, 5000), price))
+            if old in live and loc == locate:
+                live.remove(old)
+                live.append(new)
+
+    return msgs

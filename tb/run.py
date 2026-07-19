@@ -19,13 +19,17 @@ RTL = [REPO / 'rtl' / 'itch_parser.sv',
 TOOLS = Path('C:/Users/adars/tools/oss-cad-suite/bin')
 
 
-def run(top, module):
+def run(top, module, testcases=None):
     runner = get_runner('icarus')
     build_dir = REPO / 'sim_build' / top
     runner.build(sources=RTL, hdl_toplevel=top, build_dir=str(build_dir),
                  build_args=['-g2012'])
-    runner.test(hdl_toplevel=top, test_module=module,
-                build_dir=str(build_dir), test_dir=str(REPO / 'tb'))
+    # one vvp process per test so every test sees honest power on memory,
+    # the level rams and way tables only zero at bitstream load
+    for tc in (testcases or [None]):
+        runner.test(hdl_toplevel=top, test_module=module,
+                    testcase=tc, build_dir=str(build_dir),
+                    test_dir=str(REPO / 'tb'))
 
 
 def main():
@@ -39,7 +43,8 @@ def main():
     if which in ('parser', 'all'):
         run('itch_parser', 'test_parser')
     if which in ('book', 'all'):
-        run('book_top', 'test_book')
+        run('book_top', 'test_book',
+            testcases=['real_data_bbo', 'random_torture'])
 
 
 if __name__ == '__main__':

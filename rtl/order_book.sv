@@ -13,6 +13,10 @@
 // get counted and skipped, the stats tell you how rare that is. real
 // books shard per symbol and bound their price range exactly like this.
 //
+// cfg_locate and cfg_base are static configuration, set them before the
+// first op and leave them alone. resting orders store ticks not prices,
+// so moving the base mid session would silently reprice the whole book.
+//
 // every op takes a fixed 6 cycles accept to bbo strobe and the book state
 // itself lands in 4. replace is 10 since it runs the fsm twice, cancel
 // the old ref then add the new one.
@@ -83,6 +87,15 @@ module order_book #(
 
     // memories come up zeroed from the bitstream. a live design would
     // sweep an init fsm through them on reset instead.
+    initial begin
+        // the find functions and tick math are sized for these exact
+        // widths, the parameters exist for the resource sweep scripts
+        if (TICKS_LOG2 != 12)
+            $fatal(1, "TICKS_LOG2 is fixed at 12");
+        if (SETS_LOG2 > 21)
+            $fatal(1, "hash fold needs 3*SETS_LOG2 <= 64");
+    end
+
     integer ii;
     initial begin
         for (ii = 0; ii < SETS; ii = ii + 1) begin
@@ -205,14 +218,13 @@ module order_book #(
     wire [TICKS_LOG2-1:0] bl_addr = (state == S_FIND) ? fmsb : touch_tick;
     wire [TICKS_LOG2-1:0] al_addr = (state == S_FIND) ? flsb : touch_tick;
 
-    always @(posedge clk) begin
-        bl_rd <= bid_levels[bl_addr];
-        al_rd <= ask_levels[al_addr];
+    always @(posedge clk)
         if (state == S_RESOLVE)
             ord_shares_r <= eraw_shares;
-    end
 
-    // level math for the op being applied
+    // level math for the op being applied. totals are 32 bit like the itch
+    // shares field itself, nasdaq's per order size cap keeps real level
+    // sums a long way from wrapping
     wire lvl_was_live = side_r ? bid_map[tick_r] : ask_map[tick_r];
     wire [31:0] lvl_cur = side_r ? bl_rd : al_rd;
     wire [31:0] lvl_add = (lvl_was_live ? lvl_cur : 32'd0) + c_shares;
@@ -221,6 +233,30 @@ module order_book #(
             ? ord_shares_r
             : (c_shares > ord_shares_r ? ord_shares_r : c_shares);
     wire [31:0] lvl_sub = lvl_cur - ord_shares_taken;
+
+    // level rams get one read write port each (plus the debug port), write
+    // wins on the cycle it happens, reads run every other cycle
+    wire lvl_do_write = (state == S_LEVEL) &&
+        ((c_code == OP_ADD) ? (add_tick_ok && !any_hit_r && any_free)
+                            : any_hit_r);
+    wire [31:0] lvl_new = (c_code == OP_ADD) ? lvl_add : lvl_sub;
+
+    always @(posedge clk) begin
+        if (lvl_do_write && side_r) bid_levels[tick_r] <= lvl_new;
+        else                        bl_rd <= bid_levels[bl_addr];
+    end
+    always @(posedge clk) begin
+        if (lvl_do_write && !side_r) ask_levels[tick_r] <= lvl_new;
+        else                         al_rd <= ask_levels[al_addr];
+    end
+
+    // full word rewrite of whichever way matched, partial bit writes do
+    // not map onto bram
+    wire ord_keep = !(c_code == OP_DELETE || c_code == OP_REPLACE
+                      || ord_shares_taken == ord_shares_r);
+    wire [EW-1:0] took_entry = {ord_keep, c_ref, side_r, tick_r,
+                                ord_keep ? ord_shares_r - ord_shares_taken
+                                         : 32'd0};
 
     always @(posedge clk) begin
         if (rst) begin
@@ -305,13 +341,8 @@ module order_book #(
                             2'd2: way2[idx_r] <= {1'b1, c_ref, c_side, tick_r, c_shares};
                             2'd3: way3[idx_r] <= {1'b1, c_ref, c_side, tick_r, c_shares};
                         endcase
-                        if (side_r) begin
-                            bid_levels[tick_r] <= lvl_add;
-                            bid_map[tick_r]    <= 1'b1;
-                        end else begin
-                            ask_levels[tick_r] <= lvl_add;
-                            ask_map[tick_r]    <= 1'b1;
-                        end
+                        if (side_r) bid_map[tick_r] <= 1'b1;
+                        else        ask_map[tick_r] <= 1'b1;
                         state <= S_FIND;
                     end
                 end else begin
@@ -319,25 +350,18 @@ module order_book #(
                         cnt_miss <= cnt_miss + 1;   // ref we never stored,
                         state    <= S_IDLE;         // usually out of window
                     end else begin
+                        // shares come off the level in the shared port
+                        // block, here we just retire the bitmap bit and
+                        // rewrite the matched way in full
                         if (side_r) begin
-                            bid_levels[tick_r] <= lvl_sub;
                             if (lvl_sub == 32'd0) bid_map[tick_r] <= 1'b0;
                         end else begin
-                            ask_levels[tick_r] <= lvl_sub;
                             if (lvl_sub == 32'd0) ask_map[tick_r] <= 1'b0;
                         end
-                        if (c_code == OP_DELETE || c_code == OP_REPLACE
-                            || ord_shares_taken == ord_shares_r) begin
-                            if (hit0) way0[idx_r][EW-1] <= 1'b0;
-                            if (hit1) way1[idx_r][EW-1] <= 1'b0;
-                            if (hit2) way2[idx_r][EW-1] <= 1'b0;
-                            if (hit3) way3[idx_r][EW-1] <= 1'b0;
-                        end else begin
-                            if (hit0) way0[idx_r][31:0] <= ord_shares_r - ord_shares_taken;
-                            if (hit1) way1[idx_r][31:0] <= ord_shares_r - ord_shares_taken;
-                            if (hit2) way2[idx_r][31:0] <= ord_shares_r - ord_shares_taken;
-                            if (hit3) way3[idx_r][31:0] <= ord_shares_r - ord_shares_taken;
-                        end
+                        if (hit0) way0[idx_r] <= took_entry;
+                        if (hit1) way1[idx_r] <= took_entry;
+                        if (hit2) way2[idx_r] <= took_entry;
+                        if (hit3) way3[idx_r] <= took_entry;
                         if (c_code == OP_REPLACE) begin
                             c_rep_pend <= 1'b1;
                             c_side     <= side_r;   // add half keeps the side

@@ -9,7 +9,7 @@ from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, ClockCycles
 
 from itch_stream import (load_real, to_stream, n_msgs_env, TICKS, TICK,
-                         m_add, m_exec, m_cancel, m_delete, m_replace)
+                         build_torture)
 from windowed_ref import WindowedBook
 
 import sys
@@ -29,7 +29,7 @@ def predict(decoded, locate, base):
     return ref, exp
 
 
-async def run_stream(dut, stream, locate, base):
+async def run_stream(dut, stream, locate, base, gap_pct=0.03):
     cocotb.start_soon(Clock(dut.clk, 10, 'ns').start())
     dut.rst.value = 1
     dut.in_valid.value = 0
@@ -54,13 +54,38 @@ async def run_stream(dut, stream, locate, base):
 
     cocotb.start_soon(monitor())
 
+    # the wire is allowed to pause anywhere, including inside a length
+    # prefix, so pause it randomly and make sure nobody cares
+    gaps = random.Random(1234)
     for b in stream:
         dut.in_valid.value = 1
         dut.in_data.value = b
         await RisingEdge(dut.clk)
+        if gap_pct and gaps.random() < gap_pct:
+            dut.in_valid.value = 0
+            await ClockCycles(dut.clk, gaps.randrange(1, 4))
     dut.in_valid.value = 0
     await ClockCycles(dut.clk, 40)   # let the fifo drain
     return got
+
+
+async def sweep_depth(dut, ref):
+    """Read every level of both sides back through the debug port and
+    compare against the reference, catches miscounts at ticks that never
+    made it to best."""
+    bad = []
+    for side_bit, levels in ((1, ref.bid), (0, ref.ask)):
+        for tick in range(TICKS):
+            dut.dbg_addr.value = (side_bit << 12) | tick
+            await ClockCycles(dut.clk, 2)
+            want = levels.get(tick, 0)
+            hw = int(dut.dbg_shares.value)
+            if hw != want:
+                bad.append((side_bit, tick, hw, want))
+    for side_bit, tick, hw, want in bad[:10]:
+        dut._log.error(f'depth mismatch side {side_bit} tick {tick}: '
+                       f'hw {hw} ref {want}')
+    assert not bad, f'{len(bad)} depth mismatches'
 
 
 def check(dut, got, exp, ref, base):
@@ -98,65 +123,18 @@ async def real_data_bbo(dut):
     ref, exp = predict(decoded, locate, base)
     got = await run_stream(dut, to_stream(raw), locate, base)
     check(dut, got, exp, ref, base)
+    await sweep_depth(dut, ref)
+    dut._log.info('full depth sweep matched on both sides')
 
 
 @cocotb.test()
 async def random_torture(dut):
-    rng = random.Random(20260719)
-    locate, noise = 7, 9
-    base = 3000000
-    live = []
-    next_ref = 1000
-    msgs = []
-
-    def fresh_ref():
-        nonlocal next_ref
-        next_ref += rng.choice([2, 4, 6])
-        return next_ref
-
-    for _ in range(6000):
-        r = rng.random()
-        loc = noise if rng.random() < 0.15 else locate
-        if r < 0.40 or not live:
-            price = base + rng.randrange(0, TICKS) * TICK
-            if rng.random() < 0.05:
-                price = base + rng.randrange(0, TICKS * TICK)  # maybe off tick
-            if rng.random() < 0.05:
-                price = base + TICKS * TICK + rng.randrange(0, 500000)
-            if rng.random() < 0.02 and base > 0:
-                price = rng.randrange(0, base)                 # below window
-            ref = fresh_ref()
-            msgs.append(m_add(loc, ref, rng.random() < 0.5,
-                              rng.randrange(1, 5000),
-                              price, mpid=rng.random() < 0.1))
-            if loc == locate:
-                live.append(ref)
-        elif r < 0.60:
-            ref = rng.choice(live) if rng.random() < 0.9 else fresh_ref()
-            shares = rng.randrange(1, 8000)   # sometimes more than resting
-            px = base + rng.randrange(0, TICKS) * TICK
-            msgs.append(m_exec(loc, ref, shares,
-                               with_price=px if rng.random() < 0.3 else None))
-        elif r < 0.75:
-            ref = rng.choice(live) if rng.random() < 0.9 else fresh_ref()
-            msgs.append(m_cancel(loc, ref, rng.randrange(1, 6000)))
-        elif r < 0.88:
-            ref = rng.choice(live) if rng.random() < 0.9 else fresh_ref()
-            msgs.append(m_delete(loc, ref))
-            if ref in live and loc == locate:
-                live.remove(ref)
-        else:
-            old = rng.choice(live) if rng.random() < 0.9 else fresh_ref()
-            new = fresh_ref()
-            price = base + rng.randrange(0, TICKS) * TICK
-            if rng.random() < 0.10:
-                price = base + TICKS * TICK + 12345   # replace out of window
-            msgs.append(m_replace(loc, old, new, rng.randrange(1, 5000), price))
-            if old in live and loc == locate:
-                live.remove(old)
-                live.append(new)
+    locate, base = 7, 3000000
+    msgs = build_torture(locate=locate, base=base)
 
     decoded = [itch.decode(m) for m in msgs]
     ref, exp = predict(decoded, locate, base)
-    got = await run_stream(dut, to_stream(msgs), locate, base)
+    got = await run_stream(dut, to_stream(msgs), locate, base, gap_pct=0.05)
     check(dut, got, exp, ref, base)
+    assert ref.overflow >= 2, 'collision attack failed to overflow a set'
+    await sweep_depth(dut, ref)

@@ -1,5 +1,7 @@
 """Parser vs golden decoder, field for field, on real feed bytes."""
 
+import random
+
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, ClockCycles
@@ -67,10 +69,14 @@ async def parser_matches_golden(dut):
 
     cocotb.start_soon(monitor())
 
+    gaps = random.Random(99)
     for b in stream:
         dut.in_valid.value = 1
         dut.in_data.value = b
         await RisingEdge(dut.clk)
+        if gaps.random() < 0.03:
+            dut.in_valid.value = 0
+            await ClockCycles(dut.clk, gaps.randrange(1, 4))
     dut.in_valid.value = 0
     await ClockCycles(dut.clk, 5)
 
