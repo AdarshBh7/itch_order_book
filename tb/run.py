@@ -13,8 +13,10 @@ from cocotb_tools.runner import get_runner
 
 REPO = Path(__file__).resolve().parents[1]
 RTL = [REPO / 'rtl' / 'itch_parser.sv',
+       REPO / 'rtl' / 'op_fifo.sv',
        REPO / 'rtl' / 'order_book.sv',
-       REPO / 'rtl' / 'book_top.sv']
+       REPO / 'rtl' / 'book_top.sv',
+       REPO / 'rtl' / 'book_farm.sv']
 
 TOOLS = Path('C:/Users/adars/tools/oss-cad-suite/bin')
 
@@ -41,10 +43,13 @@ def main():
 
     which = sys.argv[1] if len(sys.argv) > 1 else 'all'
     if which in ('parser', 'all'):
-        run('itch_parser', 'test_parser')
+        run('itch_parser', 'test_parser',
+            testcases=['parser_matches_golden', 'corrupt_frame_goes_dead'])
     if which in ('book', 'all'):
         run('book_top', 'test_book',
             testcases=['real_data_bbo', 'random_torture'])
+    if which in ('farm', 'all'):
+        run('book_farm', 'test_farm')
 
 
 if __name__ == '__main__':

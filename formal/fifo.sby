@@ -1,0 +1,16 @@
+[tasks]
+prove
+
+[options]
+prove: mode prove
+prove: depth 10
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal op_fifo.sv
+prep -top op_fifo
+
+[files]
+../rtl/op_fifo.sv

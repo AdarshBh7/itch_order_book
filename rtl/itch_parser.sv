@@ -132,14 +132,14 @@ module itch_parser (
     // by the time dec_pend is up the whole body including the final byte has
     // been written, back to back messages cannot clobber buf_[0] until three
     // cycles later so reading here is safe
-    function [63:0] f64(input [15:0] o);
+    function [63:0] f64(input [5:0] o);
         f64 = {buf_[o], buf_[o+1], buf_[o+2], buf_[o+3],
                buf_[o+4], buf_[o+5], buf_[o+6], buf_[o+7]};
     endfunction
-    function [31:0] f32(input [15:0] o);
+    function [31:0] f32(input [5:0] o);
         f32 = {buf_[o], buf_[o+1], buf_[o+2], buf_[o+3]};
     endfunction
-    function [15:0] f16(input [15:0] o);
+    function [15:0] f16(input [5:0] o);
         f16 = {buf_[o], buf_[o+1]};
     endfunction
 
@@ -190,6 +190,37 @@ module itch_parser (
             end
         end
     end
+
+`ifdef FORMAL
+    reg f_past_valid = 1'b0;
+    reg f_init = 1'b0;
+    always @(posedge clk) f_past_valid <= 1'b1;
+    always @(posedge clk) if (rst) f_init <= 1'b1;
+    always @(*) if (!f_past_valid) assume(rst);
+
+    always @(posedge clk) if (f_past_valid && f_init && !$past(rst)) begin
+        // dead means dead, and a dead parser never says anything
+        if ($past(framing_err)) begin
+            assert(framing_err);
+            assert(!op_valid);
+            assert(!msg_valid);
+        end
+        if ($past(state) == S_DEAD)
+            assert(state == S_DEAD);
+    end
+
+    // the byte counter can never index outside the buffer
+    always @(*) if (f_init && !rst && state == S_BODY) begin
+        assert(msg_len >= 16'd1 && msg_len <= MAX_LEN[15:0]);
+        assert(cnt < msg_len);
+    end
+
+    always @(posedge clk) begin
+        cover(op_valid);
+        cover(framing_err);
+        cover(state == S_DEAD);
+    end
+`endif
 
 endmodule
 

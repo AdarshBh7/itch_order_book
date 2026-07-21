@@ -99,3 +99,59 @@ async def parser_matches_golden(dut):
 
     dut._log.info(f'parser clean on {len(raw)} real messages, '
                   f'{len(got)} book ops checked')
+
+
+@cocotb.test()
+async def corrupt_frame_goes_dead(dut):
+    """A frame whose length disagrees with its type has to kill the
+    parser, not resync it onto garbage. Feed real traffic, corrupt one
+    frame, then keep feeding real traffic and demand total silence."""
+    import struct
+    raw, decoded, _, _ = load_real(400)
+    exp_good = len(expected_ops(decoded[:200]))
+
+    cocotb.start_soon(Clock(dut.clk, 10, 'ns').start())
+    dut.rst.value = 1
+    dut.in_valid.value = 0
+    await ClockCycles(dut.clk, 5)
+    dut.rst.value = 0
+    await ClockCycles(dut.clk, 2)
+
+    ops = 0
+    msgs = 0
+
+    async def monitor():
+        nonlocal ops, msgs
+        while True:
+            await RisingEdge(dut.clk)
+            if dut.op_valid.value:
+                ops += 1
+            if dut.msg_valid.value:
+                msgs += 1
+
+    cocotb.start_soon(monitor())
+
+    async def feed(stream):
+        for b in stream:
+            dut.in_valid.value = 1
+            dut.in_data.value = b
+            await RisingEdge(dut.clk)
+        dut.in_valid.value = 0
+
+    await feed(to_stream(raw[:200]))
+    await ClockCycles(dut.clk, 5)
+    assert not dut.framing_err.value
+    assert ops == exp_good, f'{ops} ops before corruption, wanted {exp_good}'
+
+    # an A message body chopped to 20 bytes, length field agrees with the
+    # frame so only the per type check can catch it
+    await feed(struct.pack('>H', 20) + b'A' + bytes(19))
+    await ClockCycles(dut.clk, 5)
+    assert dut.framing_err.value, 'length/type mismatch not flagged'
+
+    before = (ops, msgs)
+    await feed(to_stream(raw[200:400]))
+    await ClockCycles(dut.clk, 10)
+    assert (ops, msgs) == before, 'parser emitted after going dead'
+    dut._log.info(f'parser went dead after corrupt frame and stayed '
+                  f'silent through {len(raw) - 200} further messages')

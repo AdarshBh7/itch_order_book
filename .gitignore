@@ -6,3 +6,12 @@ sim_build/
 *.fst
 obj_dir/
 results.xml
+out/*.bin
+out/*progress.log
+formal/book/
+formal/book_*/
+formal/fifo/
+formal/fifo_*/
+formal/parser/
+formal/parser_*/
+tb/verilator/obj_dir/

@@ -34,8 +34,8 @@ module book_top #(
     output wire [31:0] cnt_outlier,
     output wire [31:0] cnt_miss,
     output wire [31:0] cnt_overflow,
-    output reg  [31:0] fifo_hwm,
-    output reg         fifo_overflow,     // must never rise
+    output wire [31:0] fifo_hwm,
+    output wire        fifo_overflow,     // must never rise
     output wire        framing_err,
 
     input  wire [TICKS_LOG2:0] dbg_addr,
@@ -62,47 +62,18 @@ module book_top #(
     );
 
     localparam OPW = 3 + 16 + 64 + 1 + 32 + 32 + 64;
-    localparam DEPTH = 1 << FIFO_LOG2;
-
-    reg [OPW-1:0] fifo [0:DEPTH-1];
-    reg [FIFO_LOG2:0] wptr, rptr;
-    wire [FIFO_LOG2:0] fill = wptr - rptr;
-    wire full  = (fill == DEPTH[FIFO_LOG2:0]);
-    wire empty = (fill == 0);
-    wire [31:0] fill32 = {{(31-FIFO_LOG2){1'b0}}, fill};
 
     wire        b_ready;
-    wire        b_valid = !empty;
-    reg [OPW-1:0] rdata;
+    wire        b_valid;
+    wire [OPW-1:0] rdata;
 
-    wire pop = b_valid && b_ready;
-
-    always @(posedge clk) begin
-        if (rst) begin
-            wptr <= 0;
-            rptr <= 0;
-            fifo_hwm <= 32'd0;
-            fifo_overflow <= 1'b0;
-        end else begin
-            if (p_valid) begin
-                if (full) begin
-                    fifo_overflow <= 1'b1;
-                end else begin
-                    fifo[wptr[FIFO_LOG2-1:0]] <=
-                        {p_code, p_locate, p_ref, p_side, p_shares, p_price, p_ref2};
-                    wptr <= wptr + 1;
-                end
-            end
-            if (pop)
-                rptr <= rptr + 1;
-            if (fill32 > fifo_hwm)
-                fifo_hwm <= fill32;
-        end
-    end
-
-    // first word fall through so a lone op does not sit in the queue
-    always @(*)
-        rdata = fifo[rptr[FIFO_LOG2-1:0]];
+    op_fifo #(.W(OPW), .LOG2(FIFO_LOG2)) fifo (
+        .clk(clk), .rst(rst),
+        .wr(p_valid),
+        .wdata({p_code, p_locate, p_ref, p_side, p_shares, p_price, p_ref2}),
+        .rvalid(b_valid), .rready(b_ready), .rdata(rdata),
+        .hwm(fifo_hwm), .overflow(fifo_overflow)
+    );
 
     order_book #(
         .TICKS_LOG2(TICKS_LOG2),

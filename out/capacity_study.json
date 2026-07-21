@@ -1,0 +1,28 @@
+{
+ "sets_log2_11": {
+  "capacity": 8192,
+  "overflow_drops": 377945,
+  "bbo_diverged_checks": 1063744,
+  "divergence_pct": 53.3646
+ },
+ "sets_log2_13": {
+  "capacity": 32768,
+  "overflow_drops": 24396,
+  "bbo_diverged_checks": 70674,
+  "divergence_pct": 3.5455
+ },
+ "sets_log2_14": {
+  "capacity": 65536,
+  "overflow_drops": 2496,
+  "bbo_diverged_checks": 6077,
+  "divergence_pct": 0.3049
+ },
+ "sets_log2_15": {
+  "capacity": 131072,
+  "overflow_drops": 137,
+  "bbo_diverged_checks": 469,
+  "divergence_pct": 0.0235
+ },
+ "applied_checks": 1993352,
+ "secs": 932
+}

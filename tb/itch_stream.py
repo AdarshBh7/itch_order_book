@@ -16,38 +16,46 @@ TICKS = 4096
 TICK = 100
 
 
-def load_real(n_msgs, symbol=b'AAPL', other_every=500, scan_cap=3_000_000):
-    """Real feed messages, densified: every message for the chosen symbol
+def load_real_multi(n_msgs, symbols, other_every=500, scan_cap=3_000_000):
+    """Real feed messages, densified: every message for the chosen symbols
     plus one in other_every of everything else, order preserved. Premarket
-    flow for one symbol is sparse and simulators are slow, this keeps the
+    flow per symbol is sparse and simulators are slow, this keeps the
     bench minutes long while still hammering the locate filter. The full
-    unfiltered day goes through the verilator harness instead."""
+    unfiltered day goes through the verilator harness instead. Returns
+    raw, decoded, {symbol: locate}, {symbol: base}."""
     raw, decoded = [], []
-    locate = None
-    base = None
+    locates = {}
+    bases = {}
+    by_locate = {}
     kept_other = 0
     for i, (t, msg) in enumerate(itch.messages(DATA, scan_cap)):
         if len(raw) >= n_msgs:
             break
         m = itch.decode(msg)
         k = type(m).__name__ if m is not None else None
-        if k == 'StockDir' and m.stock == symbol:
-            locate = m.locate
-        mine = m is not None and getattr(m, 'locate', None) == locate \
-            and locate is not None
+        if k == 'StockDir' and m.stock in symbols:
+            locates[m.stock] = m.locate
+            by_locate[m.locate] = m.stock
+        sym = by_locate.get(getattr(m, 'locate', None)) if m is not None else None
         kept_other += 1
-        if not mine and kept_other % other_every:
+        if sym is None and kept_other % other_every:
             continue
         raw.append(msg)
         decoded.append(m)
-        if mine and base is None and k == 'AddOrder':
-            base = max(0, m.price - (TICKS // 2) * TICK)
-            base -= base % TICK
-    if locate is None:
-        raise RuntimeError(f'{symbol} never appeared in the slice')
-    if base is None:
-        base = 0
-    return raw, decoded, locate, base
+        if sym is not None and sym not in bases and k == 'AddOrder':
+            b = max(0, m.price - (TICKS // 2) * TICK)
+            bases[sym] = b - b % TICK
+    for s in symbols:
+        if s not in locates:
+            raise RuntimeError(f'{s} never appeared in the slice')
+        bases.setdefault(s, 0)
+    return raw, decoded, locates, bases
+
+
+def load_real(n_msgs, symbol=b'AAPL', other_every=500, scan_cap=3_000_000):
+    raw, decoded, locates, bases = load_real_multi(
+        n_msgs, (symbol,), other_every, scan_cap)
+    return raw, decoded, locates[symbol], bases[symbol]
 
 
 def to_stream(raw_msgs):

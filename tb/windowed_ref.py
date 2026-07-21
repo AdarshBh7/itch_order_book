@@ -9,16 +9,18 @@ it separate keeps the golden model honest.
 TICKS = 4096
 TICK = 100
 SETS_LOG2 = 11
-SETS = 1 << SETS_LOG2
 WAYS = 4
 
 
 class WindowedBook:
-    def __init__(self, locate, base):
+    def __init__(self, locate, base, sets_log2=SETS_LOG2, ways=WAYS):
         self.locate = locate
         self.base = base
+        self.sets_log2 = sets_log2
+        self.sets = 1 << sets_log2
+        self.ways = ways
         self.orders = {}          # ref -> [side, tick, shares, set, way]
-        self.table = [[None] * WAYS for _ in range(SETS)]
+        self.table = [[None] * ways for _ in range(self.sets)]
         self.bid = {}             # tick -> shares
         self.ask = {}
         self.filtered = 0
@@ -26,11 +28,10 @@ class WindowedBook:
         self.miss = 0
         self.overflow = 0
 
-    @staticmethod
-    def _hash(ref):
+    def _hash(self, ref):
         # same xor fold the rtl uses
-        mask = SETS - 1
-        return (ref ^ (ref >> SETS_LOG2) ^ (ref >> 2 * SETS_LOG2)) & mask
+        sl = self.sets_log2
+        return (ref ^ (ref >> sl) ^ (ref >> 2 * sl)) & (self.sets - 1)
 
     def _tick(self, price):
         d = price - self.base
@@ -51,7 +52,7 @@ class WindowedBook:
         """False when the hash set is full, mirroring the rtl drop."""
         s = self._hash(ref)
         ways = self.table[s]
-        for w in range(WAYS):
+        for w in range(self.ways):
             if ways[w] is None:
                 ways[w] = ref
                 lv = self._levels(side)

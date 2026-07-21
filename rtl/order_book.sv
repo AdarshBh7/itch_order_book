@@ -87,6 +87,7 @@ module order_book #(
 
     // memories come up zeroed from the bitstream. a live design would
     // sweep an init fsm through them on reset instead.
+`ifndef SYNTHESIS
     initial begin
         // the find functions and tick math are sized for these exact
         // widths, the parameters exist for the resource sweep scripts
@@ -95,6 +96,7 @@ module order_book #(
         if (SETS_LOG2 > 21)
             $fatal(1, "hash fold needs 3*SETS_LOG2 <= 64");
     end
+`endif
 
     integer ii;
     initial begin
@@ -401,6 +403,37 @@ module order_book #(
         dbg_shares <= dbg_addr[TICKS_LOG2]
                         ? bid_levels[dbg_addr[TICKS_LOG2-1:0]]
                         : ask_levels[dbg_addr[TICKS_LOG2-1:0]];
+
+`ifdef FORMAL
+    reg f_past_valid = 1'b0;
+    reg f_init = 1'b0;
+    always @(posedge clk) f_past_valid <= 1'b1;
+    always @(posedge clk) if (rst) f_init <= 1'b1;
+    always @(*) if (!f_past_valid) assume(rst);
+
+    // every op finishes in bounded time, replace being the 9 cycle worst
+    // case, so op_ready can never starve
+    reg [3:0] f_busy = 4'd0;
+    always @(posedge clk) begin
+        if (rst) f_busy <= 4'd0;
+        else if (state != S_IDLE || c_rep_pend) f_busy <= f_busy + 4'd1;
+        else f_busy <= 4'd0;
+    end
+    always @(*) if (f_init && !rst) assert(f_busy <= 4'd9);
+
+    // the fsm has no business in undefined states
+    always @(*) if (f_init && !rst) assert(state <= S_SHARES);
+
+    // a strobe only ever fires out of s_shares
+    always @(posedge clk) if (f_past_valid && !$past(rst))
+        if (bbo_valid) assert($past(state) == S_SHARES);
+
+    always @(posedge clk) begin
+        cover(bbo_valid && bid_present && ask_present);
+        cover(cnt_overflow != 0);
+        cover(c_rep_pend);
+    end
+`endif
 
     // keep xes out of the replace path before first use
     initial c_rep_pend = 1'b0;

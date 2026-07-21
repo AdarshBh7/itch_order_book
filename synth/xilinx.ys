@@ -1,0 +1,4 @@
+read_verilog -sv -DSYNTHESIS rtl/itch_parser.sv rtl/op_fifo.sv rtl/order_book.sv rtl/book_top.sv
+hierarchy -top book_top
+synth_xilinx -family xc7
+stat -tech xilinx

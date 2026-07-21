@@ -1,0 +1,25 @@
+name: ci
+
+on: [push, pull_request]
+
+jobs:
+  sim:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install cocotb pytest sortedcontainers
+      - uses: YosysHQ/setup-oss-cad-suite@v3
+      - name: fetch real itch sample slice
+        run: python scripts/fetch_data.py --slice-mb 24
+      - name: golden model on real data
+        run: python -m model.replay data/itch_prefix.gz --max 2000000
+      - name: cocotb benches
+        run: ITCH_N_MSGS=4000 ITCH_TORTURE_OPS=1500 python tb/run.py
+      - name: formal
+        run: |
+          cd formal
+          sby -f fifo.sby
+          sby -f parser.sby prove
