@@ -1,0 +1,7 @@
+# the deliverable is the rtl. the python is the verification oracle and
+# tooling around it, so keep it out of the language stats.
+model/**    linguist-vendored
+tb/**       linguist-vendored
+scripts/**  linguist-vendored
+*.sv        linguist-language=SystemVerilog
+docs/**     linguist-documentation
