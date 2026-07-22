@@ -15,3 +15,6 @@ formal/fifo_*/
 formal/parser/
 formal/parser_*/
 tb/verilator/obj_dir/
+out/book_ecp5*.json
+out/synth_ecp5*.log
+out/pnr_ecp5.log

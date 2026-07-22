@@ -399,10 +399,17 @@ module order_book #(
         end
     end
 
+    // depth snapshot port, verification only. leaving it in for synthesis
+    // adds a third access to the level rams and blocks clean block ram
+    // inference, so it compiles out of the hardware build
+`ifdef SYNTHESIS
+    always @(posedge clk) dbg_shares <= 32'd0;
+`else
     always @(posedge clk)
         dbg_shares <= dbg_addr[TICKS_LOG2]
                         ? bid_levels[dbg_addr[TICKS_LOG2-1:0]]
                         : ask_levels[dbg_addr[TICKS_LOG2-1:0]];
+`endif
 
 `ifdef FORMAL
     reg f_past_valid = 1'b0;

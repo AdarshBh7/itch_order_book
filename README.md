@@ -85,8 +85,17 @@ depend on how deep the book is or how many orders rest at a level.
 | op accepted to best bid/offer valid | 6 |
 | order replace (internally a cancel then an add) | 10 |
 
-Six cycles, always. Turn that into nanoseconds with whatever clock you close
-timing at.
+Six cycles, always. The value of a fixed-latency design is that once you know
+the clock, you know the exact time, with no distribution and no tail.
+
+On where the clock lands: I ran the full place and route with nextpnr on a
+Lattice ECP5-85 (the design fits in about 40% of the logic and 32 block RAMs),
+and the critical path is the single-cycle next-best-price search across all
+4096 levels. That's the honest bottleneck right now. The search is one big
+priority encode in a single cycle, and pipelining it into a couple of stages
+is the clear next step to push the clock up, since nothing else on the path is
+close. I'd rather point at the real critical path than quote a number from a
+config that hides it.
 
 ## Resource usage
 
@@ -198,9 +207,10 @@ scripts/     data fetch, demo renderer
 
 ## Honest notes
 
-The published Fmax depends on the target part and how hard you push
-place-and-route; the deterministic story here is the cycle latency, and the
-resource numbers above are from synthesis. The default config is single-symbol
-and sized small on purpose so it's easy to simulate; the capacity table is how
-you'd resize it for production. The data is Nasdaq's own free historical sample,
-not a live feed.
+The deterministic story here is the cycle latency; the clock frequency depends
+on the target part and, as noted above, on pipelining the next-best-price
+search, which I haven't done yet. The default config is single-symbol and sized
+small on purpose so it's easy to simulate, and the capacity table is how you'd
+resize it for production. The debug snapshot port compiles out of the hardware
+build so the level arrays infer as block RAM. The data is Nasdaq's own free
+historical sample, not a live feed.
